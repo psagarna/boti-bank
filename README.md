@@ -20,13 +20,15 @@ of this project.
 Both agents keep all their data in a Python dictionary in RAM — no database, no disk. Restarting a
 process resets its world.
 
-> 📐 The full design rationale, trade-offs and test findings live in **[`DESIGN-credito.md`](DESIGN-credito.md)**.
+> This README is the single source of truth for the project: what it does, how to run it, and why it
+> is built this way.
 
 ---
 
 ## Table of contents
 
 - [Architecture](#architecture)
+- [Design decisions](#design-decisions)
 - [Repository layout](#repository-layout)
 - [Quick start](#quick-start)
 - [Configuration](#configuration)
@@ -94,6 +96,46 @@ cycles.
 
 ---
 
+## Design decisions
+
+Why the project looks like this, and what was deliberately *not* done.
+
+### Why two agents instead of one with more tools
+
+1. **It is the A2A use case being demonstrated** in Agent Manager — two components, two endpoints,
+   two API keys.
+2. **It isolates the risk policy** (scoring) from the transactional core.
+3. **It keeps each agent's tool set small.** This is the non-obvious one: with an 8B model
+   (`hermes-2-pro-llama3-8b`), tool-selection accuracy degrades noticeably past roughly 8–10 tools.
+   Merging the two agents would push `boti-bank` well over that line.
+
+> ⚠️ If you are tempted to "simplify" this into a single agent with 12 tools, point 3 is the reason
+> it was not done that way.
+
+### Why the card payment debits first and compensates on failure
+
+`credito_abonar` touches both stores and there is no distributed transaction, so the order is
+chosen, not incidental: **the locally reversible, no-network step goes first; the remote step goes
+last.** If the remote call fails, the local debit is compensated (`AJUSTE_REVERSA`). The reverse
+order would leave credit applied against money that was never taken.
+
+### Why `cuenta_origen` is the one thing the user must supply
+
+Every other value the agents can derive on their own. The source account cannot be inferred — Ana
+has three. This is the single point in the flow where full autonomy is deliberately broken, and it
+is broken there on purpose rather than guessing which account to drain.
+
+### Alternatives considered and rejected
+
+Both are reversible without touching the architecture, if you want a simpler demo:
+
+| Decision taken | Alternative rejected | Trade-off |
+| :--- | :--- | :--- |
+| The payment debits a **real bank account**, with compensation | Have `abonar_tarjeta` only record the payment inside `credito`, touching no account | Simpler — removes the cross-store consistency problem entirely — but much less realistic |
+| **One active card per customer** (a second application returns the existing one) | Allow several cards per customer | Would force every tool to take an explicit `tarjeta_id`, complicating the conversational flow |
+
+---
+
 ## Repository layout
 
 | Path | What it is |
@@ -103,7 +145,6 @@ cycles.
 | `main-mistral.py` | Variant of `main.py` that talks to a **Mistral** endpoint (`ChatMistralAI`) behind a gateway that authenticates with an `API-Key` header instead of `Authorization: Bearer`. Same tools, same graph. |
 | `botibank.yaml` | OpenAPI 3.0 description of the **banking domain** (customers, accounts, services, mortgages). Reference/contract document — note that `main.py` itself only serves `POST /chat`. |
 | `credito.yaml` | OpenAPI 3.0 spec of the `credito` component: `/chat` plus the `/internal/*` endpoints. This is what gets registered in Agent Manager. |
-| `DESIGN-credito.md` | Design document: architecture decision, data model, tool contracts, sequence flows, risks, and what changed once it was tested against a real LLM. |
 | `testing-boti.py` | Interactive test harness against `boti-bank` — two question batteries (banking, and credit via A2A). |
 | `testing-credito.py` | Interactive test harness against the `credito` agent's `/chat`, sending hard data in `context`. |
 | `manual-test.md` | Copy-paste `curl` snippets for manual smoke testing. |
@@ -297,7 +338,7 @@ new answer. Measured: shared thread → 1 of 3 operations actually executed; fre
 > This is not paranoia. On the first real run, the 8B model replied *"I registered the purchase"*
 > and *"I applied the payment"* **without ever calling the tools** — while `boti-bank` had already
 > debited $400 from a real account. Keyword detection didn't catch it, because the reply contained
-> no error text. See §10 of `DESIGN-credito.md`.
+> no error text. That single run is why the marker exists.
 
 ### `rest` — deterministic
 
@@ -313,21 +354,22 @@ last; **compensate** if the remote step fails.
 
 ```mermaid
 sequenceDiagram
+    autonumber
     participant U as User
-    participant B as boti-bank (8000)
-    participant C as credito (8001)
+    participant B as boti-bank 8000
+    participant C as credito 8001
 
-    U->>B: "Pay 150 of TRX-000101 from CTA-122"
-    B->>B: Validate account exists, amount > 0, sufficient balance
-    B->>B: Debit CTA-122 · record PAGO_TARJETA
-    B->>C: POST /chat (or /internal/pagos) {transaccion_id, monto}
+    U->>B: Pay 150 of TRX-000101 from CTA-122
+    B->>B: Validate account, positive amount, sufficient balance
+    B->>B: Debit CTA-122 and record PAGO_TARJETA
+    B->>C: POST /chat or /internal/pagos with transaccion_id and monto
     alt Payment applied
-        C-->>B: {saldoPendiente, cuotasPagadas, disponibleTarjeta} + [RESULTADO_TOOLS]
-        B-->>U: "Payment applied. New account balance: …"
-    else Error, timeout, or missing [RESULTADO_TOOLS]
-        C-->>B: ERROR / no tool result
-        B->>B: Refund CTA-122 · record AJUSTE_REVERSA
-        B-->>U: "Could not apply the payment; the money was refunded to CTA-122."
+        C-->>B: Tool result - saldoPendiente, cuotasPagadas, disponibleTarjeta
+        B-->>U: Payment applied. New account balance ...
+    else Error, timeout, or no RESULTADO_TOOLS marker
+        C-->>B: ERROR or no tool result
+        B->>B: Refund CTA-122 and record AJUSTE_REVERSA
+        B-->>U: Could not apply the payment. Money refunded to CTA-122
     end
 ```
 
@@ -480,7 +522,7 @@ More snippets in [`manual-test.md`](manual-test.md).
 
 ### What has been verified
 
-Covered by the batteries and documented in §10 of `DESIGN-credito.md`:
+Exercised by the test batteries above, against a real LLM:
 
 - The `available = limit − Σ outstanding` invariant, on seed data and after operating.
 - Scoring: approval, rejection by income, rejection by DTI, limit ceiling, idempotency.
@@ -517,8 +559,7 @@ CREDITO_AGENT_API_KEY=<its api key>
 
 ## Known limitations
 
-These are intentional trade-offs for a demo, not open bugs — all of them are discussed in
-`DESIGN-credito.md` §9.
+These are intentional trade-offs for a demo, not open bugs.
 
 1. **State is in RAM.** Restarting `credito` wipes the cards while `boti-bank`'s accounts keep the
    debits that were already applied. Fine for demos; needs a persistence layer otherwise.
