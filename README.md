@@ -37,7 +37,7 @@ process resets its world.
 - [Credit policy (deterministic scoring)](#credit-policy-deterministic-scoring)
 - [HTTP API reference](#http-api-reference)
 - [Seed data](#seed-data)
-- [Testing](#testing)
+- [Testing and guided walkthrough](#testing-and-guided-walkthrough)
 - [Deploying to WSO2 Agent Manager](#deploying-to-wso2-agent-manager)
 - [Known limitations](#known-limitations)
 
@@ -147,7 +147,6 @@ Both are reversible without touching the architecture, if you want a simpler dem
 | `credito.yaml` | OpenAPI 3.0 spec of the `credito` component: `/chat` plus the `/internal/*` endpoints. This is what gets registered in Agent Manager. |
 | `testing-boti.py` | Interactive test harness against `boti-bank` — two question batteries (banking, and credit via A2A). |
 | `testing-credito.py` | Interactive test harness against the `credito` agent's `/chat`, sending hard data in `context`. |
-| `manual-test.md` | Copy-paste `curl` snippets for manual smoke testing. |
 | `.env` / `.env-mistral` | Environment configuration (see [Configuration](#configuration)). ⚠️ Both are **tracked in git** and `.gitignore` does not exclude them — see the warning under [Configure](#3-configure). |
 | `requirements.txt` | Pinned dependencies. |
 
@@ -173,7 +172,7 @@ pip install -r requirements.txt
 
 > This repo ships with a virtualenv already created **at the repository root**
 > (`bin/`, `lib/`, `pyvenv.cfg` — all git-ignored). If you are using that one instead, drop the
-> `venv` step and prefix commands with `./bin/python`, as `manual-test.md` does.
+> `venv` step and prefix commands with `./bin/python`, as the walkthrough below does.
 
 ### 3. Configure
 
@@ -479,50 +478,333 @@ Carlos Pérez deliberately has **no card** — he is the fixture for testing the
 
 ---
 
-## Testing
+## Testing and guided walkthrough
 
-### Interactive harnesses
+Everything below was executed against this repo and the outputs are **real**, not illustrative.
+Follow it top to bottom and you will exercise the whole system, including the failure path.
+
+### Step 0 — Start from a clean slate
+
+Both agents hold their state in RAM, so **restarting resets everything to the seed data**. Every
+number in this walkthrough assumes a fresh start, and the steps are cumulative — run them in order.
 
 ```bash
-python testing-boti.py       # menu: 1 = banking battery, 2 = credit-via-A2A battery
-python testing-credito.py    # talks straight to the credito agent, hard data in `context`
+# Terminal 1
+./bin/python -m uvicorn credito:app --host 127.0.0.1 --port 8001
+
+# Terminal 2
+./bin/python -m uvicorn main:app --host 127.0.0.1 --port 8000
 ```
 
-Both print the full request (with the API key masked), the raw JSON response and the agent's reply,
-which makes them useful for debugging the A2A hop.
-
-### Manual `curl`
-
-Start both agents, then:
+Confirm both are up before going on:
 
 ```bash
-# Ask boti-bank a credit question — it delegates over A2A
-curl -X POST http://127.0.0.1:8000/chat \
-  -H "Content-Type: application/json" \
-  -d '{"message":"¿Puede la clienta Ana, con ID 71992c72-cc1c-4c5a-8b50-9ee4fb6c214d, sacar una tarjeta de crédito?","session_id":"demo-tarjetas-01"}'
+curl -s -o /dev/null -w "credito:   %{http_code}\n" http://127.0.0.1:8001/openapi.json
+curl -s -o /dev/null -w "boti-bank: %{http_code}\n" http://127.0.0.1:8000/openapi.json
+```
 
-# Talk to the credit agent directly (hard data goes in context, not in the prose)
-curl -X POST http://127.0.0.1:8001/chat \
-  -H "Content-Type: application/json" \
-  -d '{"message":"Mostrame el resumen de cuenta de esta tarjeta.","session_id":"credito-1","context":{"tarjeta_id":"TC-4821"}}'
+```
+credito:   200
+boti-bank: 200
+```
 
-# Deterministic path — what CREDITO_MODE=rest uses
+---
+
+### Track A — the deterministic path (no LLM required)
+
+Hits `credito`'s `/internal/*` endpoints directly. **This is the fastest way to verify the business
+logic**, and it works even with no model endpoint configured. Use it to tell "the rules are broken"
+apart from "the model misbehaved".
+
+#### A1. What cards does Ana have?
+
+```bash
 curl -s http://127.0.0.1:8001/internal/tarjetas/71992c72-cc1c-4c5a-8b50-9ee4fb6c214d
+```
 
-curl -X POST http://127.0.0.1:8001/internal/compras \
+```json
+{"clienteId":"71992c72-cc1c-4c5a-8b50-9ee4fb6c214d","cantidad":1,
+ "tarjetas":[{"tarjetaId":"TC-4821","clienteId":"71992c72-cc1c-4c5a-8b50-9ee4fb6c214d",
+ "titular":"Ana García","limite":2755.0,"disponible":2035.0,"estado":"ACTIVA",
+ "fechaAlta":"2026-01-15T10:00:00Z"}]}
+```
+
+#### A2. Full statement for that card
+
+```bash
+curl -s http://127.0.0.1:8001/internal/tarjetas/TC-4821/estado
+```
+
+```json
+{"tarjetaId":"TC-4821","titular":"Ana García","limite":2755.0,"disponible":2035.0,
+ "deudaTotal":720.0,"proximaCuotaTotal":190.0,
+ "transaccionesVigentes":[
+   {"transaccionId":"TRX-000101","objeto":"Notebook Lenovo IdeaPad","cuotas":6,
+    "montoCuota":150.0,"cuotasPagadas":2,"saldoPendiente":600.0},
+   {"transaccionId":"TRX-000102","objeto":"Zapatillas running Nike","cuotas":3,
+    "montoCuota":40.0,"cuotasPagadas":0,"saldoPendiente":120.0}]}
+```
+
+Check the invariant by hand: `2755 − (600 + 120) = 2035`. ✅
+
+#### A3. A rejected application (Carlos)
+
+Carlos's real profile is 375/month, below the 400 minimum:
+
+```bash
+curl -s -X POST http://127.0.0.1:8001/internal/tarjetas \
+  -H "Content-Type: application/json" \
+  -d '{"cliente_id":"33333333-cc1c-4c5a-8b50-9ee4fb6c214d","titular":"Carlos Perez",
+       "ingreso_mensual":375.0,"saldo_total":250.0,"cuota_deuda_mensual":0.0}'
+```
+
+```json
+{"aprobada":false,"tarjetaId":null,"limite":0.0,"disponible":0.0,
+ "motivo":"Ingreso mensual estimado (375.00) inferior al minimo requerido (400.00)"}
+```
+
+> 💡 **A rejection is HTTP `200`, not `400`.** Turning down an application is a valid business
+> answer, carried in `aprobada:false`. Only genuine *errors* (unknown card, insufficient credit,
+> bad amount) return `400` with a `detail` field. Do not write a test that treats a rejection as a
+> failed request.
+
+#### A4. A purchase in instalments
+
+```bash
+curl -s -X POST http://127.0.0.1:8001/internal/compras \
   -H "Content-Type: application/json" \
   -d '{"tarjeta_id":"TC-4821","objeto":"Microondas","cuotas":4,"monto_cuota":75.0}'
+```
 
-curl -X POST http://127.0.0.1:8001/internal/pagos \
+```json
+{"transaccionId":"TRX-000105","tarjetaId":"TC-4821","objeto":"Microondas","cuotas":4,
+ "montoCuota":75.0,"montoTotal":300.0,"disponibleRestante":1735.0}
+```
+
+Available credit went `2035 → 1735`.
+
+#### A5. A purchase that busts the limit
+
+```bash
+curl -s -X POST http://127.0.0.1:8001/internal/compras \
+  -H "Content-Type: application/json" \
+  -d '{"tarjeta_id":"TC-4821","objeto":"Auto usado","cuotas":12,"monto_cuota":1000.0}'
+```
+
+```json
+{"detail":"credito disponible insuficiente: la compra suma 12000.00 y la tarjeta TC-4821 tiene 1735.00 disponible"}
+```
+
+HTTP `400`. Nothing was written.
+
+#### A6. Paying an instalment
+
+```bash
+curl -s -X POST http://127.0.0.1:8001/internal/pagos \
   -H "Content-Type: application/json" \
   -d '{"transaccion_id":"TRX-000101","monto":150.0}'
 ```
 
-More snippets in [`manual-test.md`](manual-test.md).
+```json
+{"pagoId":"PG-000005","transaccionId":"TRX-000101","objeto":"Notebook Lenovo IdeaPad",
+ "montoAbonado":150.0,"saldoPendiente":450.0,"cuotasPagadas":3.0,"cuotasRestantes":3.0,
+ "estado":"VIGENTE","disponibleTarjeta":1885.0}
+```
+
+Paying 150 freed exactly 150 of credit: `1735 → 1885`.
+
+#### A7. Overpaying is refused
+
+```bash
+curl -s -X POST http://127.0.0.1:8001/internal/pagos \
+  -H "Content-Type: application/json" \
+  -d '{"transaccion_id":"TRX-000102","monto":999.0}'
+```
+
+```json
+{"detail":"el abono (999.00) supera el saldo pendiente de la transaccion (120.00); aboná como maximo ese monto"}
+```
+
+---
+
+### Track B — the conversational path (needs a working LLM)
+
+Same operations in natural language, through `boti-bank`, which delegates over A2A. **Restart both
+agents before starting this track** so the numbers below match.
+
+> The models answer in Spanish and the exact wording changes between runs — that is normal. The
+> **numbers** are what you check.
+
+#### B1. A plain banking question (no A2A hop)
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message":"Enumera todos los clientes del banco.","session_id":"wt-01"}'
+```
+
+```json
+{"response":"Los clientes del banco son:\n\n1. Ana García - ID: 71992c72-cc1c-4c5a-8b50-9ee4fb6c214d - Email: ana@ejemplo.com\n2. Pablo Saga - ID: 88888888-...\n3. Carlos Pérez - ID: 33333333-..."}
+```
+
+#### B2. Ana's accounts — note the balance, you will need it in B6
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message":"¿Cuáles son las cuentas y saldos de la clienta con ID 71992c72-cc1c-4c5a-8b50-9ee4fb6c214d?","session_id":"wt-02"}'
+```
+
+```
+CTA-122 Corriente: $1800.50 · CTA-123 Ahorro: $100.00 · CTA-999 Inversión: $0.00
+```
+
+#### B3. The A2A hop — can Ana get a card?
+
+This is the interesting one: `boti-bank` computes her profile locally, calls `credito`, and relays
+the verdict.
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message":"¿Puede la clienta Ana, con ID 71992c72-cc1c-4c5a-8b50-9ee4fb6c214d, sacar una tarjeta de crédito? Decime el límite y el disponible.","session_id":"wt-03"}'
+```
+
+```json
+{"response":"La clienta Ana ... puede sacar una tarjeta de crédito. Su límite será de $2755 y tendrá disponible $2035 para gastar. Sin embargo, ya tenía una tarjeta activa, por lo que no se le emitirá una nueva."}
+```
+
+That last clause is the **idempotency rule** firing — she already has `TC-4821`.
+
+#### B4. A rejection, relayed faithfully
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message":"¿Y el cliente Carlos, con ID 33333333-cc1c-4c5a-8b50-9ee4fb6c214d, puede sacar una tarjeta de crédito?","session_id":"wt-04"}'
+```
+
+```json
+{"response":"El cliente ... no puede sacar una tarjeta de crédito en este momento. Su ingreso mensual estimado es inferior al mínimo requerido."}
+```
+
+`boti-bank` did not decide this — it repeated `credito`'s verdict.
+
+#### B5. Buying in instalments, in natural language
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message":"Comprá un microondas con la tarjeta TC-4821 en 4 cuotas de 75.","session_id":"wt-05"}'
+```
+
+```json
+{"response":"El microondas ha sido comprado con éxito ... El id de transacción es TRX-000105. El crédito disponible restante en la tarjeta es de 1735.00."}
+```
+
+#### B6. The cross-store payment
+
+This debits a **real bank account** and applies the payment in the other agent:
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message":"Aboná 150 de la transacción TRX-000101 usando la cuenta CTA-122.","session_id":"wt-06"}'
+```
+
+```json
+{"response":"El pago de 150 de la transacción TRX-000101 ha sido abonado con éxito desde la cuenta CTA-122. El saldo pendiente es de 450.00 y se tienen 3 cuotas restantes ... El crédito disponible en la tarjeta es de 1885.00."}
+```
+
+Verify it landed in `credito`'s store, not just in the model's prose:
+
+```bash
+curl -s http://127.0.0.1:8001/internal/tarjetas/TC-4821/estado
+```
+
+```json
+{"tarjetaId":"TC-4821","titular":"Ana García","limite":2755.0,"disponible":1885.0,
+ "deudaTotal":870.0,"proximaCuotaTotal":265.0,"transaccionesVigentes":[
+  {"transaccionId":"TRX-000101",...,"cuotasPagadas":3.0,"saldoPendiente":450.0},
+  {"transaccionId":"TRX-000102",...,"saldoPendiente":120.0},
+  {"transaccionId":"TRX-000105","objeto":"microondas",...,"saldoPendiente":300.0}]}
+```
+
+---
+
+### Track C — the failure demo (the one worth showing)
+
+Proves the compensating refund: money leaves the account, the remote step fails, the money comes
+back. **Restart both agents first.**
+
+#### C1. Note the starting balance
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/chat -H "Content-Type: application/json" \
+  -d '{"message":"¿Cuáles son las cuentas y saldos de la clienta con ID 71992c72-cc1c-4c5a-8b50-9ee4fb6c214d?","session_id":"c-01"}'
+```
+
+`CTA-122` is at **1800.50**.
+
+#### C2. Kill the credit agent
+
+Stop the `credito` process (Ctrl-C in its terminal), then confirm it is really down:
+
+```bash
+curl -s -o /dev/null -w "%{http_code}\n" -m 3 http://127.0.0.1:8001/openapi.json   # -> 000
+```
+
+#### C3. Attempt the payment anyway
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/chat -H "Content-Type: application/json" \
+  -d '{"message":"Aboná 150 de la transacción TRX-000101 usando la cuenta CTA-122.","session_id":"c-02"}'
+```
+
+```json
+{"response":"Lo siento, hubo un problema al intentar abonar la transacción TRX-000101. Se reintegró el dinero a la cuenta CTA-122 y su saldo actual es de 1800,5..."}
+```
+
+#### C4. Confirm the money came back
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/chat -H "Content-Type: application/json" \
+  -d '{"message":"¿Cuáles son las cuentas y saldos de la clienta con ID 71992c72-cc1c-4c5a-8b50-9ee4fb6c214d?","session_id":"c-03"}'
+```
+
+`CTA-122` is back to **1800.50** — unchanged. Internally the movement log holds the full audit
+trail: a `PAGO_TARJETA` debit followed by an `AJUSTE_REVERSA` refund. The account was never left
+short for a payment that did not happen.
+
+> Swap `CREDITO_MODE=rest` in `.env`, restart `boti-bank`, and run Tracks B and C again. The replies
+> are terser but the numbers are identical — that is the point of having both transports.
+
+---
+
+### Interactive harnesses
+
+For a scripted battery instead of one-off calls:
+
+```bash
+./bin/python testing-boti.py       # menu: 1 = banking, 2 = credit via A2A
+./bin/python testing-credito.py    # straight at the credito agent, data in `context`
+```
+
+Both print the full request (API key masked), the raw JSON response and the reply, which makes them
+the easiest way to watch the A2A hop.
+
+### Troubleshooting
+
+| Symptom | Cause | Fix |
+| :--- | :--- | :--- |
+| `ERROR: no se pudo contactar al agente de credito` | `credito` is not running, or `CREDITO_AGENT_URL` is wrong | Start it on 8001; check the URL ends in `/chat` |
+| `ERROR: el agente de credito no ejecuto la operacion` | The child model replied without calling its tool | Expected safety net. Retry, or set `CREDITO_MODE=rest` |
+| Numbers do not match this walkthrough | State was mutated by earlier calls | Restart both agents — state is in RAM |
+| The agent asks for confirmation instead of acting | Long history degrades instruction following | Use a new `session_id` |
+| HTTP `422` from a deployed endpoint | `/chat` body does not match the registered OpenAPI | `message` + `session_id` required, `context` optional |
+| Reply is empty or the call times out | LLM endpoint unreachable or slow | Check `MODEL_BASE_URL`; raise `CREDITO_TIMEOUT` |
 
 ### What has been verified
-
-Exercised by the test batteries above, against a real LLM:
 
 - The `available = limit − Σ outstanding` invariant, on seed data and after operating.
 - Scoring: approval, rejection by income, rejection by DTI, limit ceiling, idempotency.
