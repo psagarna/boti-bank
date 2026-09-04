@@ -147,7 +147,7 @@ Both are reversible without touching the architecture, if you want a simpler dem
 | `credito.yaml` | OpenAPI 3.0 spec of the `credito` component: `/chat` plus the `/internal/*` endpoints. This is what gets registered in Agent Manager. |
 | `testing-boti.py` | Interactive test harness against `boti-bank` — two question batteries (banking, and credit via A2A). |
 | `testing-credito.py` | Interactive test harness against the `credito` agent's `/chat`, sending hard data in `context`. |
-| `.env` / `.env-mistral` | Environment configuration (see [Configuration](#configuration)). ⚠️ Both are **tracked in git** and `.gitignore` does not exclude them — see the warning under [Configure](#3-configure). |
+| `.env` / `.env-mistral` | Environment configuration, **committed on purpose** so the demo runs after a clone. They carry local defaults and placeholders only — see [Configuration](#configuration). |
 | `requirements.txt` | Pinned dependencies. |
 
 ---
@@ -196,12 +196,14 @@ API_PORT=8000
 CREDITO_API_PORT=8001
 ```
 
-> ⚠️ **Before you put a real key in here.** `.env` and `.env-mistral` are currently **tracked in
-> git**, and `.gitignore` does not exclude them. They hold no real secret today — the committed
-> `MODEL_API_KEY` is the same placeholder as the in-code default — but the moment someone pastes a
-> real WSO2 or OpenAI key and commits, it is in the history. Before sharing this repo, consider
-> `git rm --cached .env .env-mistral`, adding `.env*` to `.gitignore`, and committing a
-> `.env.example` with placeholder values instead.
+> ℹ️ **`.env` is committed on purpose.** It holds local defaults and placeholders — the committed
+> `MODEL_API_KEY` is the same dummy value as the in-code default, and the agent keys are empty — so
+> cloning the repo gives you a working local setup with no extra steps.
+>
+> Keep it that way: **real gateway keys belong in the deployment environment, not in this file.**
+> When you deploy to Agent Manager, set `CREDITO_AGENT_API_KEY` and `MODEL_API_KEY` as environment
+> variables there. `os.getenv` reads them identically, and `python-dotenv` does not override a
+> variable that is already set in the environment.
 
 ### 4. Run both agents
 
@@ -825,11 +827,14 @@ Each agent is deployed as its **own component**, with its own endpoint and its o
 | `botibank` | `main.py` | `botibank.yaml` | 8000 |
 | `credito-agent` | `credito.py` | `credito.yaml` | 8001 |
 
-Then point `boti-bank` at the deployed credit agent:
+Then point `boti-bank` at the deployed credit agent. Set these **as environment variables on the
+`botibank` component**, not in the committed `.env` — a variable already present in the environment
+wins over the file, so the local defaults stay untouched:
 
-```dotenv
-CREDITO_AGENT_URL=https://<credito-endpoint>/chat
-CREDITO_AGENT_API_KEY=<its api key>
+```
+CREDITO_AGENT_URL     = https://<credito-endpoint>/chat
+CREDITO_AGENT_API_KEY = <the credito component's API key>
+MODEL_API_KEY         = <the LLM gateway key>
 ```
 
 > ⚠️ **The `/chat` schema must match the registered OpenAPI exactly** — `message` and `session_id`
