@@ -67,7 +67,7 @@ flowchart TB
 
     LLM["LLM endpoint<br/>(local llama-server / OpenAI / Mistral gateway)"]
 
-    C -->|"POST /chat<br/>{message, session_id, context?}"| BAPI
+    C -->|"POST /chat<br/>message · session_id · context?"| BAPI
     BGRAPH -->|"A2A: POST /chat<br/>REST: POST /internal/*"| CAPI
     BGRAPH -.->|inference| LLM
     CGRAPH -.->|inference| LLM
@@ -76,14 +76,15 @@ flowchart TB
 **The LangGraph loop** (identical in both agents):
 
 ```
-START ──> [ agent node: LLM decides ]
-               │              ▲
-       tool_calls present?    │
-          │           │       │
-        yes           no      │
-          ▼           ▼       │
-   [ tool node ]     END      │
-          └──────────────────-┘
+                  ┌─────────────────────────────┐
+                  │                             │
+                  ▼                             │
+  START ──▶ ┌───────────┐   tool_calls?  ┌──────────────┐
+            │   agent   │ ──── yes ────▶ │  tool node   │
+            │ (LLM call)│                │ (runs tools) │
+            └───────────┘                └──────────────┘
+                  │
+                  └──── no ────▶ END   (reply goes back to the caller)
 ```
 
 **Ownership rule:** account money is *always* moved by `boti-bank`; credit (limit, instalments,
@@ -106,7 +107,7 @@ cycles.
 | `testing-boti.py` | Interactive test harness against `boti-bank` — two question batteries (banking, and credit via A2A). |
 | `testing-credito.py` | Interactive test harness against the `credito` agent's `/chat`, sending hard data in `context`. |
 | `manual-test.md` | Copy-paste `curl` snippets for manual smoke testing. |
-| `.env` / `.env-mistral` | Environment configuration (see below). Not committed with real keys. |
+| `.env` / `.env-mistral` | Environment configuration (see [Configuration](#configuration)). ⚠️ Both are **tracked in git** and `.gitignore` does not exclude them — see the warning under [Configure](#3-configure). |
 | `requirements.txt` | Pinned dependencies. |
 
 ---
@@ -129,6 +130,10 @@ source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
+> This repo ships with a virtualenv already created **at the repository root**
+> (`bin/`, `lib/`, `pyvenv.cfg` — all git-ignored). If you are using that one instead, drop the
+> `venv` step and prefix commands with `./bin/python`, as `manual-test.md` does.
+
 ### 3. Configure
 
 Create a `.env` in the repo root (see [Configuration](#configuration) for every variable):
@@ -150,6 +155,13 @@ API_HOST=127.0.0.1
 API_PORT=8000
 CREDITO_API_PORT=8001
 ```
+
+> ⚠️ **Before you put a real key in here.** `.env` and `.env-mistral` are currently **tracked in
+> git**, and `.gitignore` does not exclude them. They hold no real secret today — the committed
+> `MODEL_API_KEY` is the same placeholder as the in-code default — but the moment someone pastes a
+> real WSO2 or OpenAI key and commits, it is in the history. Before sharing this repo, consider
+> `git rm --cached .env .env-mistral`, adding `.env*` to `.gitignore`, and committing a
+> `.env.example` with placeholder values instead.
 
 ### 4. Run both agents
 
