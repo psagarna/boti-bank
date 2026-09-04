@@ -1,0 +1,419 @@
+openapi: 3.0.3
+info:
+  title: API de Banca Virtual (Agente Chatbot)
+  description: API REST para operaciones bancarias completas, gestión de clientes, cuentas, servicios e hipotecas.
+  version: 1.2.0
+servers:
+  - url: http://localhost:8000/api/v1
+    description: Servidor Local
+
+tags:
+  - name: Clientes
+    description: Gestión de clientes del banco (alta, baja, listado)
+  - name: Cuentas
+    description: Alta/baja de cuentas y operaciones (transferencias, movimientos, ingresos, retiros)
+  - name: Servicios
+    description: Gestión y pago de servicios adheridos (luz, agua, gas)
+  - name: Hipotecas
+    description: Gestión, consulta y pago de créditos hipotecarios
+
+paths:
+  # ==========================================
+  # SECCIÓN: CLIENTES
+  # ==========================================
+  /clientes:
+    get:
+      tags: [Clientes]
+      summary: Listar todos los clientes
+      responses:
+        '200':
+          description: Lista de clientes recuperada con éxito
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Cliente'
+    post:
+      tags: [Clientes]
+      summary: Agregar un cliente nuevo
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Cliente'
+      responses:
+        '201':
+          description: Cliente creado con éxito
+
+  /clientes/{clienteId}:
+    delete:
+      tags: [Clientes]
+      summary: Eliminar un cliente
+      parameters:
+        - name: clienteId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Cliente eliminado con éxito
+
+  # ==========================================
+  # SECCIÓN: CUENTAS 
+  # ==========================================
+  /cuentas:
+    get:
+      tags: [Cuentas]
+      summary: Listar todas las cuentas de un cliente
+      parameters:
+        - name: clienteId
+          in: query
+          required: true
+          schema:
+            type: string
+          description: ID del cliente para filtrar sus cuentas
+      responses:
+        '200':
+          description: Lista de cuentas del cliente recuperada con éxito
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Cuenta'
+    post:
+      tags: [Cuentas]
+      summary: Agregar una cuenta nueva
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CuentaRequest'
+      responses:
+        '201':
+          description: Cuenta agregada con éxito
+
+  /cuentas/{cuentaId}:
+    delete:
+      tags: [Cuentas]
+      summary: Eliminar una cuenta
+      parameters:
+        - name: cuentaId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: clienteId
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Cuenta eliminada con éxito
+
+  /cuentas/{cuentaId}/movimientos:
+    get:
+      tags: [Cuentas]
+      summary: Ver los movimientos de la cuenta
+      parameters:
+        - name: cuentaId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Lista de movimientos
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Movimiento'
+
+  /cuentas/{cuentaId}/transferir:
+    post:
+      tags: [Cuentas]
+      summary: Hacer una transferencia a otra cuenta
+      parameters:
+        - name: cuentaId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TransferenciaRequest'
+      responses:
+        '200':
+          description: Transferencia realizada
+
+  /cuentas/{cuentaId}/ingresar:
+    post:
+      tags: [Cuentas]
+      summary: Ingresar dinero a la cuenta
+      parameters:
+        - name: cuentaId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MontoRequest'
+      responses:
+        '200':
+          description: Ingreso realizado
+
+  /cuentas/{cuentaId}/sacar:
+    post:
+      tags: [Cuentas]
+      summary: Sacar dinero de la cuenta
+      parameters:
+        - name: cuentaId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MontoRequest'
+      responses:
+        '200':
+          description: Retiro realizado
+          
+  # ==========================================
+  # SECCIÓN: SERVICIOS
+  # ==========================================
+  /servicios:
+    get:
+      tags: [Servicios]
+      summary: Listar servicios disponibles para pagar
+      responses:
+        '200':
+          description: Lista de servicios
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Servicio'
+    post:
+      tags: [Servicios]
+      summary: Agregar un servicio nuevo
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Servicio'
+      responses:
+        '201':
+          description: Servicio agregado
+
+  /servicios/{codigoServicio}:
+    delete:
+      tags: [Servicios]
+      summary: Eliminar un servicio
+      parameters:
+        - name: codigoServicio
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Servicio eliminado
+
+  /servicios/pagar:
+    post:
+      tags: [Servicios]
+      summary: Pagar un servicio
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PagoServicioRequest'
+      responses:
+        '200':
+          description: Pago procesado
+
+  # ==========================================
+  # SECCIÓN: HIPOTECAS
+  # ==========================================
+  /hipotecas:
+    get:
+      tags: [Hipotecas]
+      summary: Listar hipotecas de un cliente
+      parameters:
+        - name: clienteId
+          in: query
+          required: true
+          schema:
+            type: string
+          description: ID del cliente para filtrar sus hipotecas
+      responses:
+        '200':
+          description: Lista de hipotecas del cliente
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Hipoteca'
+    post:
+      tags: [Hipotecas]
+      summary: Obtener (crear) una nueva hipoteca
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CrearHipotecaRequest'
+      responses:
+        '201':
+          description: Hipoteca otorgada con éxito
+
+  /hipotecas/{idHipoteca}:
+    get:
+      tags: [Hipotecas]
+      summary: Consultar el balance de una hipoteca específica
+      parameters:
+        - name: idHipoteca
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Detalles y balance de la hipoteca
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Hipoteca'
+
+  /hipotecas/{idHipoteca}/pagar:
+    post:
+      tags: [Hipotecas]
+      summary: Pagar cuota parcial de la hipoteca
+      parameters:
+        - name: idHipoteca
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PagoHipotecaRequest'
+      responses:
+        '200':
+          description: Pago procesado con éxito
+
+components:
+  schemas:
+    Cliente:
+      type: object
+      required: [id, nombre, apellido]
+      properties:
+        id: { type: string, example: "76543210A" }
+        nombre: { type: string, example: "Ana" }
+        apellido: { type: string, example: "García" }
+
+    Cuenta:
+      type: object
+      properties:
+        cuentaId: { type: string, example: "1234567890" }
+        clienteId: { type: string, example: "76543210A" }
+        saldo: { type: number, format: float, example: 1500.50 }
+
+    CuentaRequest:
+      type: object
+      required: [cuentaId, clienteId]
+      properties:
+        cuentaId: { type: string, example: "1234567890" }
+        clienteId: { type: string, example: "76543210A" }
+
+    MontoRequest:
+      type: object
+      required: [monto]
+      properties:
+        monto: { type: number, format: float, example: 1500.50 }
+
+    TransferenciaRequest:
+      type: object
+      required: [cuentaDestino, monto]
+      properties:
+        cuentaDestino: { type: string, example: "0987654321" }
+        monto: { type: number, format: float, example: 500.00 }
+        concepto: { type: string, example: "Pago alquiler" }
+
+    Movimiento:
+      type: object
+      properties:
+        id: { type: string }
+        fecha: { type: string, format: date-time }
+        tipo: { type: string, enum: [INGRESO, RETIRO, TRANSFERENCIA_ENVIADA, TRANSFERENCIA_RECIBIDA, PAGO_SERVICIO, PAGO_HIPOTECA, DESEMBOLSO_HIPOTECA, PAGO_TARJETA, AJUSTE_REVERSA] }
+        monto: { type: number, format: float }
+        descripcion: { type: string }
+
+    Servicio:
+      type: object
+      required: [codigoServicio, nombre, monto, vencimiento]
+      properties:
+        codigoServicio: { type: string, example: "ELESUR-1234" }
+        nombre: { type: string, example: "Luz" }
+        monto: { type: number, format: float, example: 45.20 }
+        vencimiento: { type: string, format: date, example: "2026-06-15" }
+
+    PagoServicioRequest:
+      type: object
+      required: [cuentaOrigen, codigoServicio, monto]
+      properties:
+        cuentaOrigen: { type: string, example: "1234567890" }
+        codigoServicio: { type: string }
+        monto: { type: number, format: float }
+
+    Hipoteca:
+      type: object
+      properties:
+        id: { type: string, description: "ID único de la hipoteca", example: "HIP-001" }
+        clienteId: { type: string, example: "76543210A" }
+        montoTotal: { type: number, format: float, description: "Monto original otorgado" }
+        balancePendiente: { type: number, format: float, description: "Deuda restante a pagar" }
+        vencimiento: { type: string, format: date, description: "Fecha límite del próximo pago o fin del crédito" }
+        pagoParcial: { type: number, format: float, description: "Monto de la cuota periódica" }
+
+    CrearHipotecaRequest:
+      type: object
+      required: [id, clienteId, monto, vencimiento, pagoParcial]
+      properties:
+        id: { type: string, example: "HIP-001" }
+        clienteId: { type: string, example: "76543210A" }
+        monto: { type: number, format: float, example: 150000.00 }
+        vencimiento: { type: string, format: date, example: "2050-01-01" }
+        pagoParcial: { type: number, format: float, example: 850.50 }
+
+    PagoHipotecaRequest:
+      type: object
+      required: [cuentaOrigen, monto]
+      properties:
+        cuentaOrigen: { type: string, description: "Cuenta de donde se debitará el dinero", example: "1234567890" }
+        monto: { type: number, format: float, description: "Monto del pago parcial", example: 850.50 }

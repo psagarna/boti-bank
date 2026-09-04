@@ -1,0 +1,300 @@
+openapi: 3.0.3
+info:
+  title: API del Agente de Crédito (BotiBank)
+  description: >
+    Agente especialista en tarjetas de crédito. Expone el endpoint conversacional /chat
+    (el que consume el agente boti-bank vía A2A) y endpoints internos determinísticos
+    /internal/* que ejecutan las mismas operaciones sin pasar por el LLM.
+  version: 1.0.0
+servers:
+  - url: http://localhost:8001
+    description: Servidor Local
+
+tags:
+  - name: Chat
+    description: Endpoint conversacional del agente (A2A)
+  - name: Interno
+    description: Operaciones determinísticas de crédito, sin LLM intermedio
+
+paths:
+  # ==========================================
+  # SECCIÓN: CHAT (A2A) — el contrato que registra Agent Manager
+  # ==========================================
+  /chat:
+    post:
+      tags: [Chat]
+      summary: Conversar con el agente de crédito
+      description: >
+        message y session_id son obligatorios; context es opcional y transporta los datos
+        duros de la operación (perfil financiero, parámetros de compra o de abono) para que
+        el agente no tenga que extraerlos de la prosa del mensaje.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatRequest'
+      responses:
+        '200':
+          description: Respuesta del agente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatResponse'
+        '500':
+          description: Error interno del agente
+
+  # ==========================================
+  # SECCIÓN: INTERNO
+  # ==========================================
+  /internal/tarjetas:
+    post:
+      tags: [Interno]
+      summary: Solicitar una tarjeta de crédito (aplica el scoring)
+      description: >
+        Evalúa el perfil financiero recibido y, si califica, emite la tarjeta. Es idempotente:
+        si el cliente ya tiene una tarjeta activa, devuelve esa sin volver a evaluar.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SolicitudTarjetaRequest'
+      responses:
+        '200':
+          description: Veredicto de la solicitud
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SolicitudTarjetaResponse'
+        '400':
+          description: Datos inválidos
+
+  /internal/tarjetas/{clienteId}:
+    get:
+      tags: [Interno]
+      summary: Listar las tarjetas de un cliente
+      parameters:
+        - name: clienteId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Tarjetas del cliente con límite y disponible
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  clienteId: { type: string }
+                  cantidad: { type: integer }
+                  tarjetas:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Tarjeta'
+
+  /internal/tarjetas/{tarjetaId}/estado:
+    get:
+      tags: [Interno]
+      summary: Resumen de cuenta de una tarjeta
+      parameters:
+        - name: tarjetaId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Límite, disponible, deuda y compras vigentes
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EstadoCuentaResponse'
+        '400':
+          description: Tarjeta no encontrada
+
+  /internal/compras:
+    post:
+      tags: [Interno]
+      summary: Comprar con tarjeta de crédito en cuotas
+      description: El monto total es cuotas * monto_cuota y no puede superar el crédito disponible.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CompraRequest'
+      responses:
+        '200':
+          description: Compra registrada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CompraResponse'
+        '400':
+          description: Tarjeta inexistente, cuotas inválidas o crédito insuficiente
+
+  /internal/pagos:
+    post:
+      tags: [Interno]
+      summary: Abonar dinero sobre una compra con tarjeta
+      description: >
+        Baja el saldo pendiente de la transacción y libera crédito disponible en la tarjeta.
+        El débito de la cuenta bancaria lo hace el agente boti-bank, no este agente.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AbonoRequest'
+      responses:
+        '200':
+          description: Abono aplicado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AbonoResponse'
+        '400':
+          description: Transacción inexistente, ya cancelada, o monto inválido
+
+components:
+  schemas:
+    ChatRequest:
+      type: object
+      required: [message, session_id]
+      properties:
+        message:
+          type: string
+          example: "Solicitá una tarjeta de crédito para este cliente"
+        session_id:
+          type: string
+          example: "botibank-sesion-automatica-003"
+        context:
+          type: object
+          additionalProperties: true
+          example:
+            cliente_id: "71992c72-cc1c-4c5a-8b50-9ee4fb6c214d"
+            titular: "Ana García"
+            ingreso_mensual: 1325.25
+            saldo_total: 1900.50
+            cuota_deuda_mensual: 800.0
+
+    ChatResponse:
+      type: object
+      properties:
+        response:
+          type: string
+
+    Tarjeta:
+      type: object
+      properties:
+        tarjetaId: { type: string, example: "TC-4821" }
+        clienteId: { type: string, example: "71992c72-cc1c-4c5a-8b50-9ee4fb6c214d" }
+        titular: { type: string, example: "Ana García" }
+        limite: { type: number, format: float, example: 2755.00 }
+        disponible: { type: number, format: float, example: 2035.00 }
+        estado: { type: string, enum: [ACTIVA, BLOQUEADA] }
+        fechaAlta: { type: string, format: date-time }
+
+    Transaccion:
+      type: object
+      properties:
+        transaccionId: { type: string, example: "TRX-000101" }
+        tarjetaId: { type: string, example: "TC-4821" }
+        objeto: { type: string, example: "Notebook Lenovo IdeaPad" }
+        cuotas: { type: integer, example: 6 }
+        montoCuota: { type: number, format: float, example: 150.00 }
+        montoTotal: { type: number, format: float, example: 900.00 }
+        saldoPendiente: { type: number, format: float, example: 600.00 }
+        cuotasPagadas: { type: number, format: float, example: 2 }
+        estado: { type: string, enum: [VIGENTE, CANCELADA] }
+        fecha: { type: string, format: date-time }
+
+    SolicitudTarjetaRequest:
+      type: object
+      required: [cliente_id]
+      properties:
+        cliente_id: { type: string, example: "33333333-cc1c-4c5a-8b50-9ee4fb6c214d" }
+        titular: { type: string, example: "Carlos Pérez" }
+        ingreso_mensual:
+          type: number
+          format: float
+          description: Promedio mensual de ingresos, calculado por el agente boti-bank
+          example: 375.00
+        saldo_total:
+          type: number
+          format: float
+          description: Suma de los saldos de las cuentas del cliente
+          example: 250.00
+        cuota_deuda_mensual:
+          type: number
+          format: float
+          description: Cuota mensual de las deudas vigentes (hipotecas)
+          example: 0.0
+
+    SolicitudTarjetaResponse:
+      type: object
+      properties:
+        aprobada: { type: boolean, example: false }
+        tarjetaId: { type: string, nullable: true, example: null }
+        limite: { type: number, format: float, example: 0.0 }
+        disponible: { type: number, format: float, example: 0.0 }
+        motivo:
+          type: string
+          example: "Ingreso mensual estimado (375.00) inferior al minimo requerido (400.00)"
+
+    CompraRequest:
+      type: object
+      required: [tarjeta_id, objeto, cuotas, monto_cuota]
+      properties:
+        tarjeta_id: { type: string, example: "TC-4821" }
+        objeto: { type: string, example: "Notebook Lenovo IdeaPad" }
+        cuotas: { type: integer, example: 6, minimum: 1, maximum: 24 }
+        monto_cuota: { type: number, format: float, example: 150.00 }
+
+    CompraResponse:
+      type: object
+      properties:
+        transaccionId: { type: string, example: "TRX-000105" }
+        tarjetaId: { type: string, example: "TC-4821" }
+        objeto: { type: string }
+        cuotas: { type: integer }
+        montoCuota: { type: number, format: float }
+        montoTotal: { type: number, format: float }
+        disponibleRestante: { type: number, format: float }
+
+    AbonoRequest:
+      type: object
+      required: [transaccion_id, monto]
+      properties:
+        transaccion_id: { type: string, example: "TRX-000101" }
+        monto: { type: number, format: float, example: 150.00 }
+
+    AbonoResponse:
+      type: object
+      properties:
+        pagoId: { type: string, example: "PG-000005" }
+        transaccionId: { type: string, example: "TRX-000101" }
+        objeto: { type: string }
+        montoAbonado: { type: number, format: float }
+        saldoPendiente: { type: number, format: float }
+        cuotasPagadas: { type: number, format: float }
+        cuotasRestantes: { type: number, format: float }
+        estado: { type: string, enum: [VIGENTE, CANCELADA] }
+        disponibleTarjeta: { type: number, format: float }
+
+    EstadoCuentaResponse:
+      type: object
+      properties:
+        tarjetaId: { type: string }
+        titular: { type: string }
+        limite: { type: number, format: float }
+        disponible: { type: number, format: float }
+        deudaTotal: { type: number, format: float }
+        proximaCuotaTotal: { type: number, format: float }
+        transaccionesVigentes:
+          type: array
+          items:
+            $ref: '#/components/schemas/Transaccion'
