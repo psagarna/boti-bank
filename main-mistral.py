@@ -2,6 +2,7 @@ import json
 import os
 import uuid
 from datetime import datetime
+from urllib.parse import urlparse
 
 import httpx
 import requests
@@ -413,33 +414,58 @@ LLM_API_KEY = os.getenv("MODEL_API_KEY", "")
 LLM_BASE_URL = os.getenv("MODEL_BASE_URL", "http://127.0.0.1:8081/v1")
 LLM_MODEL_NAME = os.getenv("MODEL_NAME", "mistral-small-latest")
 LLM_TIMEOUT = float(os.getenv("MODEL_TIMEOUT", "120"))
+# `bearer` = API oficial de Mistral (Authorization: Bearer <key>).
+# `api-key` = gateway corporativo, que autentica con el header `API-Key`.
+LLM_AUTH_MODE = os.getenv("MODEL_AUTH_MODE", "bearer").strip().lower()
 
-# El gateway autentica con el header `API-Key`, no con `Authorization: Bearer`.
-# Por eso le pasamos a ChatMistralAI clientes httpx propios: si no, el SDK
-# arma los suyos con `Authorization: Bearer <key>` y el gateway rechaza.
-# `Authorization: ""` deja el header vacío para que no interfiera.
-_llm_headers = {
-    "Content-Type": "application/json",
-    "Accept": "application/json",
-    "API-Key": LLM_API_KEY,
-    "Authorization": "",
-}
+
+def _normalize_llm_base_url(url: str) -> str:
+    """El SDK postea a `<base_url>/chat/completions`, así que la base tiene que
+    incluir ya el prefijo de versión. Sin él, api.mistral.ai responde
+    404 `no Route matched with those values`."""
+    url = url.rstrip("/")
+    if not urlparse(url).path:
+        url += "/v1"
+    return url
+
+
+LLM_BASE_URL = _normalize_llm_base_url(LLM_BASE_URL)
+
+if LLM_AUTH_MODE == "api-key":
+    # El gateway autentica con el header `API-Key`, no con `Authorization: Bearer`.
+    # Por eso le pasamos a ChatMistralAI clientes httpx propios: si no, el SDK
+    # arma los suyos con `Authorization: Bearer <key>` y el gateway rechaza.
+    # `Authorization: ""` deja el header vacío para que no interfiera.
+    _llm_headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "API-Key": LLM_API_KEY,
+        "Authorization": "",
+    }
+    _llm_clients = {
+        "client": httpx.Client(
+            base_url=LLM_BASE_URL,
+            headers=_llm_headers,
+            timeout=LLM_TIMEOUT,
+        ),
+        "async_client": httpx.AsyncClient(
+            base_url=LLM_BASE_URL,
+            headers=_llm_headers,
+            timeout=LLM_TIMEOUT,
+        ),
+    }
+else:
+    # Modo bearer: dejamos que ChatMistralAI arme sus propios clientes con
+    # `Authorization: Bearer <key>`, que es lo que espera api.mistral.ai.
+    _llm_clients = {}
 
 llm = ChatMistralAI(
     model=LLM_MODEL_NAME,
     api_key=LLM_API_KEY,
     base_url=LLM_BASE_URL,
     temperature=0.0,
-    client=httpx.Client(
-        base_url=LLM_BASE_URL,
-        headers=_llm_headers,
-        timeout=LLM_TIMEOUT,
-    ),
-    async_client=httpx.AsyncClient(
-        base_url=LLM_BASE_URL,
-        headers=_llm_headers,
-        timeout=LLM_TIMEOUT,
-    ),
+    timeout=LLM_TIMEOUT,
+    **_llm_clients,
 )
 llm_with_tools = llm.bind_tools(tools)
 
@@ -527,4 +553,7 @@ if __name__ == "__main__":
     host = os.getenv("API_HOST", "0.0.0.0")
     port = int(os.getenv("API_PORT", 8000))
 
-    uvicorn.run("main:app", host=host, port=port)
+    # El nombre del archivo lleva guion, así que no se puede importar como
+    # "main-mistral:app": le pasamos el objeto app directamente. Con la cadena
+    # "main:app" uvicorn levantaba el agente de main.py en vez de este.
+    uvicorn.run(app, host=host, port=port)
