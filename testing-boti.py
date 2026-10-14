@@ -14,7 +14,7 @@ load_dotenv()
 # ==========================================
 URL = os.getenv(
     "AGENT_URL", 
-    "https://development-wc-019e6383-b65fad2b.agent-manager.us-east-2.cloud.wso2.com:443/botibank-xz-botibank-xz-endpoint/chat"
+    "https://development-wc-019e6383-b65fad2b.us-east-2.cloud.wso2.com:443/boti-bank-amllm-boti-bank-amllm-endpoint/chat"
 )
 
 AGENT_API_KEY = os.getenv("AGENT_API_KEY", "")
@@ -32,7 +32,7 @@ SESSION_ID = "sesion-automatica-004"
 PREGUNTAS_BOTIBANK = [
     "Por favor, enumera a todos los clientes del banco.",
     "¿Me puedes decir cuáles son las cuentas bancarias y los saldos de la clienta Ana, con ID 71992c72-cc1c-4c5a-8b50-9ee4fb6c214d?",
-    "¿Qué cuentas tiene registradas el cliente Pablo (ID: 88888888-cc1c-4c5a-8b50-9ee4fb6c214d)?",
+    "¿Qué cuentas tiene registradas el cliente Pablo con id 71992c72-cc1c-4c5a-8b50-9ee4fb6c214d?",
     "Necesito hacer un depósito. Por favor, ingresa 500 en la cuenta CTA-999.",
     "Necesito hacer una transferencia de 200 desde la cuenta CTA-122 hacia la cuenta CTA-123 con el concepto 'Préstamo personal'.",
     "Intenta transferir 5000 desde la cuenta CTA-123 a la cuenta CTA-122 con el concepto 'Compra de auto'.", 
