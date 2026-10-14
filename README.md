@@ -46,34 +46,26 @@ process resets its world.
 ## Architecture
 
 ```mermaid
-flowchart TB
-    subgraph client["Client layer"]
-        C["cURL · Swagger UI · testing-*.py · Web/Mobile app"]
-    end
+flowchart LR
+    C["Client<br/>cURL · Swagger · tests"]
+    B["<b>boti-bank</b> :8000<br/>FastAPI + LangGraph"]
+    K["<b>credito</b> :8001<br/>FastAPI + LangGraph"]
+    BDB[("IN_MEMORY_DB")]
+    KDB[("CREDITO_DB")]
+    LLM(["LLM endpoint"])
 
-    subgraph boti["boti-bank — main.py · port 8000"]
-        BAPI["FastAPI  POST /chat"]
-        BGRAPH["LangGraph<br/>agent node ⇄ tool node<br/>MemorySaver checkpointer"]
-        BDB[("IN_MEMORY_DB<br/>clientes · cuentas<br/>movimientos · servicios · hipotecas")]
-        BAPI --> BGRAPH --> BDB
-    end
-
-    subgraph credito["credito — credito.py · port 8001"]
-        CAPI["FastAPI<br/>POST /chat  ·  /internal/*"]
-        CGRAPH["LangGraph<br/>agent node ⇄ tool node"]
-        COPS["_op_* business functions<br/>(shared by tools and REST)"]
-        CDB[("CREDITO_DB<br/>tarjetas · transacciones · pagos")]
-        CAPI --> CGRAPH --> COPS --> CDB
-        CAPI -.-> COPS
-    end
-
-    LLM["LLM endpoint<br/>(local llama-server / OpenAI / Mistral gateway)"]
-
-    C -->|"POST /chat<br/>message · session_id · context?"| BAPI
-    BGRAPH -->|"A2A: POST /chat<br/>REST: POST /internal/*"| CAPI
-    BGRAPH -.->|inference| LLM
-    CGRAPH -.->|inference| LLM
+    C -->|POST /chat| B
+    B -->|"A2A /chat · REST /internal/*"| K
+    B --- BDB
+    K --- KDB
+    B -.-> LLM
+    K -.-> LLM
 ```
+
+`IN_MEMORY_DB` holds clientes, cuentas, movimientos, servicios and hipotecas; `CREDITO_DB` holds
+tarjetas, transacciones and pagos. In `credito`, both the LangGraph tools and the `/internal/*` REST
+routes call the same `_op_*` business functions. The LLM endpoint can be a local llama-server,
+OpenAI, or the Mistral gateway.
 
 **The LangGraph loop** (identical in both agents):
 
