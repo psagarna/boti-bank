@@ -12,7 +12,7 @@ from typing import Optional, Dict, Any
 
 from langchain_openai import ChatOpenAI
 from langchain_core.tools import tool
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import StateGraph, START, END, MessagesState
 from langgraph.prebuilt import ToolNode
@@ -458,9 +458,33 @@ TARJETAS DE CRÉDITO:
    dato que no podés deducir: si el usuario no la indicó, consultá sus cuentas y preguntale cuál usar.
 """)
 
+# Cuantos turnos de usuario viajan al modelo. El historial completo es lo que
+# nos rompio: con el hilo acumulado, el modelo chico deja de razonar y repite
+# la salida del turno anterior. Si en algun turno respondio mal -por ejemplo
+# volcando el JSON de la herramienta en vez de redactarlo- ese ejemplo se queda
+# en el hilo y se lo ensena a si mismo en cada pregunta siguiente.
+#
+# Es el mismo problema que ya evitamos en el agente de credito dandole un
+# thread por llamada; aca no podemos hacer eso porque SI queremos conversacion,
+# asi que la acotamos.
+MAX_TURNOS = int(os.getenv("AGENT_MAX_TURNOS", "3"))
+
+
+def _recortar(messages):
+    """Deja los ultimos MAX_TURNOS turnos del usuario.
+
+    Corta siempre en un HumanMessage: cortar en cualquier otro sitio separaria
+    una tool_call de su ToolMessage y el request saldria invalido.
+    """
+    inicios = [i for i, m in enumerate(messages) if isinstance(m, HumanMessage)]
+    if len(inicios) <= MAX_TURNOS:
+        return messages
+    return messages[inicios[-MAX_TURNOS]:]
+
+
 def agent_node(state: MessagesState):
-    messages = state["messages"]
-    if not isinstance(messages[0], SystemMessage):
+    messages = _recortar(state["messages"])
+    if not messages or not isinstance(messages[0], SystemMessage):
         messages = [system_prompt] + messages
     response = llm_with_tools.invoke(messages)
     return {"messages": [response]}
@@ -500,6 +524,34 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     response: str
 
+def _respuesta_final(messages) -> str:
+    """Lo que se le devuelve al usuario: la ultima respuesta REDACTADA.
+
+    Coger messages[-1] a ciegas devuelve el ToolMessage tal cual cuando el grafo
+    termina justo despues de una herramienta, y el usuario recibe el JSON crudo
+    del banco en la cara. Aqui se busca hacia atras el ultimo AIMessage con
+    texto, y si el modelo se limito a copiar el resultado de la herramienta se
+    dice en castellano en vez de reenviar el volcado.
+    """
+    ultimo_tool = next((m.content for m in reversed(messages)
+                        if isinstance(m, ToolMessage) and isinstance(m.content, str)), None)
+
+    for m in reversed(messages):
+        if not isinstance(m, AIMessage):
+            continue
+        texto = m.content if isinstance(m.content, str) else ""
+        texto = texto.strip()
+        if not texto:
+            continue
+        if ultimo_tool and texto == ultimo_tool.strip():
+            # El modelo devolvio el JSON de la herramienta en lugar de redactarlo.
+            return ("No pude redactar la respuesta: el modelo devolvio el resultado "
+                    "de la herramienta sin elaborar. Volve a preguntarlo, por favor.")
+        return texto
+
+    return "No obtuve una respuesta del modelo para este pedido."
+
+
 @app.post("/chat", response_model=ChatResponse)
 async def chat_endpoint(req: ChatRequest):
     run_config = {"configurable": {"thread_id": req.session_id}}
@@ -512,8 +564,7 @@ async def chat_endpoint(req: ChatRequest):
             config=run_config
         )
 
-        last_message = final_state["messages"][-1].content
-        return ChatResponse(response=last_message)
+        return ChatResponse(response=_respuesta_final(final_state["messages"]))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
